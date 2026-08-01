@@ -1,6 +1,4 @@
-<p align="center">
-  <img src="Docs/icon.png" alt="Darko icon" width="128">
-</p>
+<img src="Docs/icon.png" alt="Darko icon" width="128">
 
 # Darko
 
