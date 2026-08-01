@@ -1,10 +1,10 @@
-# Darko 🌓
-
-A lightweight macOS menu bar app that toggles Light/Dark mode — manually, on a schedule, or with a global keyboard shortcut.
-
 <p align="center">
   <img src="Docs/icon.png" alt="Darko icon" width="128">
 </p>
+
+# Darko
+
+A lightweight macOS menu bar app that toggles Light/Dark mode — manually, on a schedule, or with a global keyboard shortcut.
 
 Darko is a pure AppKit app (no SwiftUI) built with Swift Package Manager. It runs entirely in the menu bar — no Dock icon.
 
