@@ -6,26 +6,84 @@ final class FlippedView: NSView {
     override var isFlipped: Bool { true }
 }
 
+/// A clean toggle switch drawn from scratch: rounded track + sliding knob.
+/// Avoids the native switch's built-in "ON/OFF" label. Toggles on click and
+/// fires the target/action, matching the `NSButton` API.
+final class ToggleSwitch: NSButton {
+
+    var onColor: NSColor = .controlAccentColor
+    var offColor: NSColor = NSColor(white: 0.5, alpha: 0.35)
+    var knobColor: NSColor = .white
+
+    private let knobInset: CGFloat = 2
+
+    override var state: NSControl.StateValue {
+        didSet { needsDisplay = true }
+    }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        configure()
+    }
+
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    private func configure() {
+        isBordered = false
+        setButtonType(.pushOnPushOff)
+        title = ""
+        wantsLayer = true
+        focusRingType = .none
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        let height = bounds.height
+        let width = bounds.width
+
+        let track = NSBezierPath(roundedRect: NSRect(x: 0.5, y: 0.5, width: width - 1, height: height - 1),
+                                 xRadius: height / 2,
+                                 yRadius: height / 2)
+        (isOn ? onColor : offColor).setFill()
+        track.fill()
+
+        let knobDiameter = height - knobInset * 2
+        let knobX = isOn ? width - knobDiameter - knobInset : knobInset
+        let knob = NSBezierPath(ovalIn: NSRect(x: knobX, y: knobInset, width: knobDiameter, height: knobDiameter))
+
+        NSGraphicsContext.saveGraphicsState()
+        let shadow = NSShadow()
+        shadow.shadowColor = NSColor.black.withAlphaComponent(0.25)
+        shadow.shadowBlurRadius = 1.5
+        shadow.shadowOffset = NSSize(width: 0, height: -0.5)
+        shadow.set()
+        knobColor.setFill()
+        knob.fill()
+        NSGraphicsContext.restoreGraphicsState()
+    }
+
+    private var isOn: Bool {
+        state == .on
+    }
+}
+
 /// The popover content: toggle button, auto schedule, launch at login, and the
-/// global keyboard shortcut recorder.
+/// global keyboard shortcut recorder. Built with Auto Layout so the popover
+/// always sizes itself to fit its content.
 final class ContentViewController: NSViewController {
 
     private let controller = AppearanceController.shared
     private let hotkey = HotkeyManager.shared
 
-    private let contentWidth: CGFloat = 300
-    private let padding: CGFloat = 16
+    private let contentWidth: CGFloat = 320
+    private let sidePadding: CGFloat = 16
+    private let rowSpacing: CGFloat = 14
     private let timeStep = 10
-
-    private var cursorY: CGFloat = 0
-
-    private var timeSlots: [Int] { stride(from: 0, to: 24 * 60, by: timeStep).map { $0 } }
 
     // MARK: - State accessors
 
-    private var isDark: Bool {
-        controller.isDarkState
-    }
+    private var isDark: Bool { controller.isDarkState }
 
     private var isAutoMode: Bool {
         UserDefaults.standard.bool(forKey: "autoMode")
@@ -60,10 +118,17 @@ final class ContentViewController: NSViewController {
             : String(format: "Switches to dark at %@", formatSlot(start))
     }
 
+    private var subtitleText: String {
+        if isAutoMode {
+            return "\(formatSlot((startMinutes / timeStep) * timeStep)) – \(formatSlot((endMinutes / timeStep) * timeStep))"
+        }
+        return isDark ? "Dark mode on" : "Light mode on"
+    }
+
     // MARK: - Lifecycle
 
     override func loadView() {
-        view = FlippedView(frame: NSRect(x: 0, y: 0, width: contentWidth, height: 100))
+        view = FlippedView()
     }
 
     override func viewDidLoad() {
@@ -93,120 +158,136 @@ final class ContentViewController: NSViewController {
 
     override func viewDidAppear() {
         super.viewDidAppear()
-        buildUI()
+        refresh()
     }
 
     @objc private func refresh() {
+        view.subviews.forEach { $0.removeFromSuperview() }
         buildUI()
     }
 
     // MARK: - Layout
 
     private func buildUI() {
-        view.subviews.forEach { $0.removeFromSuperview() }
-        cursorY = 0
+        let stack = NSStackView()
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        stack.orientation = .vertical
+        stack.alignment = .leading
+        stack.spacing = 0
 
-        headerSection()
-        divider()
-        primarySection()
-        rowSpacing()
+        view.addSubview(stack)
+        NSLayoutConstraint.activate([
+            stack.topAnchor.constraint(equalTo: view.topAnchor),
+            stack.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: sidePadding),
+            stack.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -sidePadding),
+            stack.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+            view.widthAnchor.constraint(equalToConstant: contentWidth)
+        ])
 
-        toggleRow(icon: "clock.arrow.2.circlepath",
-                  title: "Auto mode",
-                  isOn: isAutoMode,
-                  action: #selector(autoModeToggled(_:)))
-        rowSpacing()
+        let inner = stack
+
+        addHeader(to: inner)
+        inner.addArrangedSubview(separator())
+        addSpacer(inner, 14)
+
+        addPrimaryButton(to: inner)
+        addSpacer(inner, 14)
+
+        addToggleRow(icon: "clock.arrow.2.circlepath",
+                     title: "Auto mode",
+                     isOn: isAutoMode,
+                     action: #selector(autoModeToggled(_:)),
+                     to: inner)
+        addSpacer(inner, 14)
 
         if isAutoMode {
-            scheduleSection()
+            addScheduleBlock(to: inner)
+            addSpacer(inner, 14)
         }
 
-        toggleRow(icon: "power",
-                  title: "Launch at login",
-                  isOn: isLaunchAtLogin,
-                  action: #selector(launchAtLoginToggled(_:)))
-        rowSpacing()
+        addToggleRow(icon: "power",
+                     title: "Launch at login",
+                     isOn: isLaunchAtLogin,
+                     action: #selector(launchAtLoginToggled(_:)),
+                     to: inner)
+        addSpacer(inner, 14)
 
-        shortcutSection()
-        divider()
-        footerSection()
+        addShortcutRow(to: inner)
+        addSpacer(inner, 14)
+        inner.addArrangedSubview(separator())
+        addSpacer(inner, 8)
+        addFooter(to: inner)
+        addSpacer(inner, 12)
 
-        let height = cursorY
-        view.frame = NSRect(x: 0, y: 0, width: contentWidth, height: height)
-        preferredContentSize = NSSize(width: contentWidth, height: height)
+        // Let Auto Layout compute the height, then tell the popover.
+        view.layoutSubtreeIfNeeded()
+        preferredContentSize = NSSize(width: contentWidth, height: stack.fittingSize.height)
     }
 
-    /// Registers the next block at the current cursor and advances it.
-    @discardableResult
-    private func place(_ subview: NSView, height: CGFloat, inset: CGFloat = 0) -> NSView {
-        subview.frame = NSRect(x: padding + inset,
-                               y: cursorY,
-                               width: contentWidth - padding * 2 - inset * 2,
-                               height: height)
-        view.addSubview(subview)
-        cursorY += height
-        return subview
+    private func addSpacer(_ stack: NSStackView, _ height: CGFloat) {
+        let spacer = NSView()
+        spacer.translatesAutoresizingMaskIntoConstraints = false
+        spacer.heightAnchor.constraint(equalToConstant: height).isActive = true
+        spacer.widthAnchor.constraint(equalToConstant: fullWidth).isActive = true
+        stack.addArrangedSubview(spacer)
     }
 
-    private func rowSpacing(_ space: CGFloat = 14) {
-        cursorY += space
+    private func separator() -> NSBox {
+        let box = NSBox()
+        box.boxType = .separator
+        box.translatesAutoresizingMaskIntoConstraints = false
+        box.heightAnchor.constraint(equalToConstant: 1).isActive = true
+        box.widthAnchor.constraint(equalToConstant: fullWidth).isActive = true
+        return box
     }
 
-    private func divider() {
-        let line = NSBox()
-        line.boxType = .separator
-        line.frame = NSRect(x: 0, y: cursorY, width: contentWidth, height: 1)
-        view.addSubview(line)
-        cursorY += 1
+    /// Width of each top-level row (stack width minus side padding).
+    private var fullWidth: CGFloat {
+        contentWidth - sidePadding * 2
     }
 
     // MARK: - Header
 
-    private func headerSection() {
-        let icon = NSImageView()
-        icon.image = NSImage(systemSymbolName: isDark ? "moon.fill" : "sun.max.fill",
-                             accessibilityDescription: nil)
+    private func addHeader(to stack: NSStackView) {
+        let row = NSStackView()
+        row.translatesAutoresizingMaskIntoConstraints = false
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.spacing = 10
+        row.heightAnchor.constraint(equalToConstant: 42).isActive = true
+        row.widthAnchor.constraint(equalToConstant: fullWidth).isActive = true
+
+        let icon = imageView("moon.fill", size: 24)
         icon.contentTintColor = isDark ? .systemPurple : .systemOrange
-        icon.frame = NSRect(x: padding, y: cursorY + 3, width: 22, height: 22)
-        view.addSubview(icon)
+        row.addArrangedSubview(icon)
 
-        let title = NSTextField(labelWithString: "Darko")
-        title.font = .systemFont(ofSize: 13, weight: .semibold)
-        title.frame = NSRect(x: padding + 30, y: cursorY, width: 100, height: 16)
-        view.addSubview(title)
+        let title = label("Darko", size: 13, weight: .semibold)
+        row.addArrangedSubview(title)
 
-        let subtitle = NSTextField(labelWithString: subtitleText)
-        subtitle.font = .systemFont(ofSize: 11)
-        subtitle.textColor = .secondaryLabelColor
-        subtitle.lineBreakMode = .byTruncatingTail
-        subtitle.frame = NSRect(x: padding + 30, y: cursorY + 16, width: 200, height: 14)
-        view.addSubview(subtitle)
+        let subtitle = label(subtitleText, size: 11, color: .secondaryLabelColor)
+        row.addArrangedSubview(subtitle)
 
-        cursorY += 30
-        rowSpacing(12)
-    }
+        row.addArrangedSubview(NSView()) // spacer
 
-    private var subtitleText: String {
-        if isAutoMode {
-            return "\(formatSlot((startMinutes / timeStep) * timeStep)) – \(formatSlot((endMinutes / timeStep) * timeStep))"
-        }
-        return isDark ? "Dark mode on" : "Light mode on"
+        stack.addArrangedSubview(row)
     }
 
     // MARK: - Primary toggle button
 
-    private func primarySection() {
+    private func addPrimaryButton(to stack: NSStackView) {
         let button = NSButton(title: isDark ? "Switch to Light" : "Switch to Dark",
                               target: self,
                               action: #selector(primaryToggleClicked))
+        button.translatesAutoresizingMaskIntoConstraints = false
         button.bezelStyle = .rounded
         button.controlSize = .large
         button.image = NSImage(systemSymbolName: isDark ? "sun.max.fill" : "moon.fill",
                                accessibilityDescription: nil)
         button.imagePosition = .imageLeading
         button.contentTintColor = isDark ? .systemOrange : .systemPurple
-        place(button, height: 34)
-        rowSpacing(14)
+        button.heightAnchor.constraint(equalToConstant: 34).isActive = true
+        button.widthAnchor.constraint(equalToConstant: fullWidth).isActive = true
+        stack.addArrangedSubview(button)
     }
 
     @objc private func primaryToggleClicked() {
@@ -216,34 +297,43 @@ final class ContentViewController: NSViewController {
 
     // MARK: - Toggle rows
 
-    private func toggleRow(icon: String, title: String, isOn: Bool, action: Selector) {
-        let iconView = NSImageView()
-        iconView.image = NSImage(systemSymbolName: icon, accessibilityDescription: nil)
+    private func addToggleRow(icon: String,
+                              title: String,
+                              isOn: Bool,
+                              action: Selector,
+                              to stack: NSStackView) {
+        let row = NSStackView()
+        row.translatesAutoresizingMaskIntoConstraints = false
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.spacing = 10
+        row.heightAnchor.constraint(equalToConstant: 24).isActive = true
+        row.widthAnchor.constraint(equalToConstant: fullWidth).isActive = true
+
+        let iconView = imageView(icon, size: 15)
         iconView.contentTintColor = .secondaryLabelColor
-        iconView.frame = NSRect(x: 0, y: 4, width: 15, height: 15)
-        iconView.frame.origin.x = 0
+        row.addArrangedSubview(iconView)
 
-        let label = NSTextField(labelWithString: title)
-        label.font = .systemFont(ofSize: 13)
-        label.frame = NSRect(x: 24, y: 2, width: contentWidth - padding * 2 - 24 - 60, height: 17)
+        row.addArrangedSubview(label(title, size: 13))
 
-        let checkbox = NSButton()
-        checkbox.setButtonType(.switch)
+        row.addArrangedSubview(NSView()) // spacer
+
+        let checkbox = ToggleSwitch()
+        checkbox.translatesAutoresizingMaskIntoConstraints = false
         checkbox.state = isOn ? .on : .off
-        checkbox.tag = -1
         checkbox.target = self
         checkbox.action = action
-        checkbox.frame = NSRect(x: contentWidth - padding * 2 - 42, y: 0, width: 42, height: 20)
+        checkbox.widthAnchor.constraint(equalToConstant: 40).isActive = true
+        checkbox.heightAnchor.constraint(equalToConstant: 22).isActive = true
+        row.addArrangedSubview(checkbox)
 
-        let container = FlippedView()
-        container.addSubview(iconView)
-        container.addSubview(label)
-        container.addSubview(checkbox)
-        place(container, height: 22)
+        stack.addArrangedSubview(row)
     }
 
     @objc private func autoModeToggled(_ sender: NSButton) {
-        controller.autoModeChanged(sender.state == .on)
+        let enabled = sender.state == .on
+        UserDefaults.standard.set(enabled, forKey: "autoMode")
+        controller.autoModeChanged(enabled)
     }
 
     @objc private func launchAtLoginToggled(_ sender: NSButton) {
@@ -266,119 +356,138 @@ final class ContentViewController: NSViewController {
 
     // MARK: - Schedule
 
-    private func scheduleSection() {
-        let container = FlippedView()
-        let innerX: CGFloat = 30
-        let innerWidth = contentWidth - padding * 2 - innerX
+    private func addScheduleBlock(to stack: NSStackView) {
+        let block = NSStackView()
+        block.translatesAutoresizingMaskIntoConstraints = false
+        block.orientation = .vertical
+        block.alignment = .leading
+        block.spacing = 8
+        block.widthAnchor.constraint(equalToConstant: fullWidth).isActive = true
 
-        let caption = NSTextField(labelWithString: "DARK MODE SCHEDULE")
-        caption.font = .systemFont(ofSize: 10, weight: .semibold)
-        caption.textColor = .secondaryLabelColor
-        caption.frame = NSRect(x: innerX, y: 0, width: innerWidth, height: 14)
-        container.addSubview(caption)
+        let caption = label("DARK MODE SCHEDULE", size: 10, weight: .semibold, color: .secondaryLabelColor)
+        block.addArrangedSubview(caption)
 
-        let (startRow, startPopup) = makeTimeRow(icon: "moon.fill", label: "Starts",
-                                                 selected: startMinutes, tag: 0, width: innerWidth)
-        startRow.frame = NSRect(x: innerX, y: 22, width: innerWidth, height: 24)
-        startPopup.tag = 0
-        container.addSubview(startRow)
+        addTimeRow(icon: "moon.fill", title: "Starts",
+                   hour: startMinutes / 60, minute: startMinutes % 60, tag: 0, to: block)
+        addTimeRow(icon: "sun.max.fill", title: "Ends",
+                   hour: endMinutes / 60, minute: endMinutes % 60, tag: 1, to: block)
 
-        let (endRow, endPopup) = makeTimeRow(icon: "sun.max.fill", label: "Ends",
-                                             selected: endMinutes, tag: 1, width: innerWidth)
-        endRow.frame = NSRect(x: innerX, y: 54, width: innerWidth, height: 24)
-        endPopup.tag = 1
-        container.addSubview(endRow)
+        let next = label(nextSwitchText, size: 11, color: .secondaryLabelColor)
+        block.addArrangedSubview(next)
 
-        let next = NSTextField(labelWithString: nextSwitchText)
-        next.font = .systemFont(ofSize: 11)
-        next.textColor = .secondaryLabelColor
-        next.lineBreakMode = .byTruncatingTail
-        next.frame = NSRect(x: innerX, y: 86, width: innerWidth, height: 14)
-        container.addSubview(next)
-
-        place(container, height: 104)
-        rowSpacing(14)
+        stack.addArrangedSubview(block)
     }
 
-    private func makeTimeRow(icon: String, label: String, selected: Int, tag: Int, width: CGFloat)
-        -> (NSView, NSPopUpButton) {
-        let row = FlippedView()
+    private func addTimeRow(icon: String,
+                            title: String,
+                            hour: Int,
+                            minute: Int,
+                            tag: Int,
+                            to stack: NSStackView) {
+        let row = NSStackView()
+        row.translatesAutoresizingMaskIntoConstraints = false
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.spacing = 8
+        row.heightAnchor.constraint(equalToConstant: 24).isActive = true
+        row.widthAnchor.constraint(equalToConstant: fullWidth).isActive = true
 
-        let iconView = NSImageView()
-        iconView.image = NSImage(systemSymbolName: icon, accessibilityDescription: nil)
+        let iconView = imageView(icon, size: 12)
         iconView.contentTintColor = .tertiaryLabelColor
-        iconView.frame = NSRect(x: 0, y: 5, width: 12, height: 12)
-        row.addSubview(iconView)
+        row.addArrangedSubview(iconView)
 
-        let labelView = NSTextField(labelWithString: label)
-        labelView.font = .systemFont(ofSize: 12)
-        labelView.frame = NSRect(x: 18, y: 3, width: 80, height: 16)
-        row.addSubview(labelView)
+        row.addArrangedSubview(label(title, size: 12))
 
-        let popup = NSPopUpButton(frame: NSRect(x: width - 90, y: 0, width: 90, height: 22), pullsDown: false)
-        popup.addItems(withTitles: timeSlots.map { formatSlot($0) })
-        popup.selectItem(at: max(0, timeSlots.firstIndex(of: (selected / timeStep) * timeStep) ?? 0))
-        popup.tag = tag
-        popup.target = self
-        popup.action = #selector(timeChanged(_:))
-        row.addSubview(popup)
+        row.addArrangedSubview(NSView()) // spacer
 
-        return (row, popup)
+        let hours = NSPopUpButton(frame: .zero, pullsDown: false)
+        hours.translatesAutoresizingMaskIntoConstraints = false
+        hours.addItems(withTitles: (0..<24).map { String(format: "%02d", $0) })
+        hours.selectItem(at: max(0, min(23, hour)))
+        hours.tag = tag
+        hours.target = self
+        hours.action = #selector(hourChanged(_:))
+        hours.widthAnchor.constraint(equalToConstant: 56).isActive = true
+        row.addArrangedSubview(hours)
+
+        let colon = label(":", size: 12, color: .secondaryLabelColor)
+        row.addArrangedSubview(colon)
+
+        let minutes = NSPopUpButton(frame: .zero, pullsDown: false)
+        minutes.translatesAutoresizingMaskIntoConstraints = false
+        let minuteItems = stride(from: 0, to: 60, by: timeStep).map { String(format: "%02d", $0) }
+        minutes.addItems(withTitles: minuteItems)
+        minutes.selectItem(at: max(0, minuteItems.firstIndex(
+            of: String(format: "%02d", (minute / timeStep) * timeStep)) ?? 0))
+        minutes.tag = tag
+        minutes.target = self
+        minutes.action = #selector(minuteChanged(_:))
+        minutes.widthAnchor.constraint(equalToConstant: 56).isActive = true
+        row.addArrangedSubview(minutes)
+
+        stack.addArrangedSubview(row)
     }
 
-    @objc private func timeChanged(_ sender: NSPopUpButton) {
+    @objc private func hourChanged(_ sender: NSPopUpButton) {
         guard sender.indexOfSelectedItem >= 0 else { return }
-        let minutes = timeSlots[sender.indexOfSelectedItem]
         let defaults = UserDefaults.standard
         if sender.tag == 0 {
-            defaults.set(minutes / 60, forKey: "startHour")
-            defaults.set(minutes % 60, forKey: "startMinute")
+            defaults.set(sender.indexOfSelectedItem, forKey: "startHour")
         } else {
-            defaults.set(minutes / 60, forKey: "endHour")
-            defaults.set(minutes % 60, forKey: "endMinute")
+            defaults.set(sender.indexOfSelectedItem, forKey: "endHour")
+        }
+        controller.scheduleChanged()
+    }
+
+    @objc private func minuteChanged(_ sender: NSPopUpButton) {
+        guard sender.indexOfSelectedItem >= 0 else { return }
+        let minutes = sender.indexOfSelectedItem * timeStep
+        let defaults = UserDefaults.standard
+        if sender.tag == 0 {
+            defaults.set(minutes, forKey: "startMinute")
+        } else {
+            defaults.set(minutes, forKey: "endMinute")
         }
         controller.scheduleChanged()
     }
 
     // MARK: - Keyboard shortcut
 
-    private func shortcutSection() {
-        let container = FlippedView()
+    private func addShortcutRow(to stack: NSStackView) {
+        let row = NSStackView()
+        row.translatesAutoresizingMaskIntoConstraints = false
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.spacing = 10
+        row.heightAnchor.constraint(equalToConstant: 24).isActive = true
+        row.widthAnchor.constraint(equalToConstant: fullWidth).isActive = true
 
-        let iconView = NSImageView()
-        iconView.image = NSImage(systemSymbolName: "command", accessibilityDescription: nil)
+        let iconView = imageView("command", size: 15)
         iconView.contentTintColor = .secondaryLabelColor
-        iconView.frame = NSRect(x: 0, y: 4, width: 15, height: 15)
-        container.addSubview(iconView)
+        row.addArrangedSubview(iconView)
 
-        let label = NSTextField(labelWithString: "Keyboard shortcut")
-        label.font = .systemFont(ofSize: 13)
-        label.frame = NSRect(x: 24, y: 2, width: 150, height: 17)
-        container.addSubview(label)
+        row.addArrangedSubview(label("Keyboard shortcut", size: 13))
+
+        row.addArrangedSubview(NSView()) // spacer
 
         if hotkey.isRecording {
-            let hint = NSTextField(labelWithString: hotkey.needsModifierHint ? "Hold ⌘⌥⌃⇧ + key" : "Press keys…")
-            hint.font = .systemFont(ofSize: 11)
-            hint.textColor = .systemOrange
-            hint.frame = NSRect(x: contentWidth - padding * 2 - 175, y: 4, width: 100, height: 14)
-            container.addSubview(hint)
+            let hint = label(hotkey.needsModifierHint ? "Hold ⌘⌥⌃⇧ + key" : "Press keys…",
+                             size: 11,
+                             color: .systemOrange)
+            row.addArrangedSubview(hint)
 
             let cancel = NSButton(title: "Cancel", target: self, action: #selector(cancelRecording))
             cancel.bezelStyle = .inline
             cancel.font = .systemFont(ofSize: 11)
-            cancel.frame = NSRect(x: contentWidth - padding * 2 - 60, y: 0, width: 60, height: 22)
-            container.addSubview(cancel)
+            row.addArrangedSubview(cancel)
         } else {
             let shortcut = NSButton(title: hotkey.shortcutText, target: self, action: #selector(startRecording))
+            shortcut.translatesAutoresizingMaskIntoConstraints = false
             shortcut.bezelStyle = .inline
             shortcut.font = .monospacedSystemFont(ofSize: 11, weight: .medium)
             shortcut.toolTip = "Click to set a global shortcut"
-            let width = max(50, min(120, shortcut.title.size(withAttributes: [
-                .font: shortcut.font as Any
-            ]).width + 20))
-            shortcut.frame = NSRect(x: contentWidth - padding * 2 - width - (hotkey.hasShortcut ? 24 : 0),
-                                    y: 0, width: width, height: 22)
-            container.addSubview(shortcut)
+            shortcut.widthAnchor.constraint(greaterThanOrEqualToConstant: 48).isActive = true
+            row.addArrangedSubview(shortcut)
 
             if hotkey.hasShortcut {
                 let remove = NSButton(image: NSImage(systemSymbolName: "xmark.circle.fill",
@@ -388,13 +497,12 @@ final class ContentViewController: NSViewController {
                 remove.isBordered = false
                 remove.contentTintColor = .secondaryLabelColor
                 remove.toolTip = "Remove shortcut"
-                remove.frame = NSRect(x: contentWidth - padding * 2 - 18, y: 1, width: 20, height: 20)
-                container.addSubview(remove)
+                remove.widthAnchor.constraint(equalToConstant: 20).isActive = true
+                row.addArrangedSubview(remove)
             }
         }
 
-        place(container, height: 22)
-        rowSpacing(14)
+        stack.addArrangedSubview(row)
     }
 
     @objc private func startRecording() {
@@ -411,20 +519,25 @@ final class ContentViewController: NSViewController {
 
     // MARK: - Footer
 
-    private func footerSection() {
-        let version = NSTextField(labelWithString: appVersion)
-        version.font = .systemFont(ofSize: 11)
-        version.textColor = .tertiaryLabelColor
-        version.frame = NSRect(x: 0, y: 6, width: 60, height: 14)
-        view.addSubview(version)
+    private func addFooter(to stack: NSStackView) {
+        let row = NSStackView()
+        row.translatesAutoresizingMaskIntoConstraints = false
+        row.orientation = .horizontal
+        row.alignment = .centerY
+        row.heightAnchor.constraint(equalToConstant: 32).isActive = true
+        row.widthAnchor.constraint(equalToConstant: fullWidth).isActive = true
+
+        let version = label(appVersion, size: 11, color: .tertiaryLabelColor)
+        row.addArrangedSubview(version)
+
+        row.addArrangedSubview(NSView()) // spacer
 
         let quit = NSButton(title: "Quit", target: self, action: #selector(quitClicked))
         quit.isBordered = false
         quit.font = .systemFont(ofSize: 12)
-        quit.frame = NSRect(x: contentWidth - padding - 40, y: 2, width: 40, height: 20)
-        view.addSubview(quit)
+        row.addArrangedSubview(quit)
 
-        cursorY += 28
+        stack.addArrangedSubview(row)
     }
 
     private var appVersion: String {
@@ -434,5 +547,24 @@ final class ContentViewController: NSViewController {
 
     @objc private func quitClicked() {
         NSApp.terminate(nil)
+    }
+
+    // MARK: - Helpers
+
+    private func label(_ text: String, size: CGFloat, weight: NSFont.Weight = .regular, color: NSColor = .labelColor) -> NSTextField {
+        let field = NSTextField(labelWithString: text)
+        field.font = .systemFont(ofSize: size, weight: weight)
+        field.textColor = color
+        field.lineBreakMode = .byTruncatingTail
+        return field
+    }
+
+    private func imageView(_ symbol: String, size: CGFloat) -> NSImageView {
+        let view = NSImageView()
+        view.translatesAutoresizingMaskIntoConstraints = false
+        view.image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)
+        view.widthAnchor.constraint(equalToConstant: size).isActive = true
+        view.heightAnchor.constraint(equalToConstant: size).isActive = true
+        return view
     }
 }
