@@ -15,6 +15,7 @@ final class AppearanceController {
     private let defaults = UserDefaults.standard
     private var startTimer: Timer?
     private var endTimer: Timer?
+    private var lastSoundPlayTime: Date = Date(timeIntervalSince1970: 0)
 
     private enum Key {
         static let isDark = "isDark"
@@ -28,6 +29,20 @@ final class AppearanceController {
     /// Current dark-mode state, as persisted.
     var isDarkState: Bool {
         defaults.bool(forKey: Key.isDark)
+    }
+
+    /// Plays a sound when appearance changes, with debouncing to prevent duplicates.
+    private func playAppearanceSound() {
+        // Debounce: only play sound if at least 0.5 seconds have passed since last play
+        let timeSinceLastSound = Date().timeIntervalSince(lastSoundPlayTime)
+        guard timeSinceLastSound > 0.5 else { return }
+        
+        lastSoundPlayTime = Date()
+        
+        // Use the "Glass" system sound for theme changes
+        let soundURL = URL(fileURLWithPath: "/System/Library/Sounds/Glass.aiff")
+        guard let sound = NSSound(contentsOf: soundURL, byReference: false) else { return }
+        sound.play()
     }
 
     // MARK: - Lifecycle
@@ -69,6 +84,7 @@ final class AppearanceController {
         let success = await AppleScriptManager.setDarkMode(enabled)
         if success {
             defaults.set(enabled, forKey: Key.isDark)
+            playAppearanceSound()
             NotificationCenter.default.post(name: .darkoAppearanceChanged, object: nil)
         }
         return success
@@ -101,6 +117,7 @@ final class AppearanceController {
 
     @objc private func systemAppearanceChanged() {
         defaults.set(AppleScriptManager.isSystemDark, forKey: Key.isDark)
+        playAppearanceSound()
         NotificationCenter.default.post(name: .darkoAppearanceChanged, object: nil)
     }
 
